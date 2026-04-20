@@ -6,28 +6,63 @@
 #include <vector>
 #include <cstring>
 #include <mutex>
+#include <unordered_map>
 
 using namespace std;
-vector<int> clients;
+unordered_map<int,string> clients;
 mutex roster_lock;
+
+void broadcastMessage(const string& message, int excluded_socket = -1)
+{
+    lock_guard<mutex> lock(roster_lock);
+    for (const auto& [client_way, user] : clients)
+    {
+        if (client_way != excluded_socket)
+        {
+            send(client_way, message.c_str(), message.length(), 0);
+        }
+    }
+}
+
+void removeClient(int sender_way)
+{
+    lock_guard<mutex> lock(roster_lock);
+    clients.erase(sender_way);
+    close(sender_way);
+}
 
 void receiveMessage(int sender_way){
     char buffer[1024];
+
+    int byte_received = recv(sender_way, buffer, 1024, 0);
+    if(byte_received <= 0){
+        removeClient(sender_way);
+        cout << "Disconnected...\n";
+        return;
+    }
+    string username(buffer, byte_received);
+    {
+        lock_guard<mutex> lock(roster_lock);
+        clients[sender_way] = username;
+    }
+
+    cout << username << " has joined the room\n";
+    cout << "Total Count - " << clients.size() << "\n";
+    broadcastMessage("[server]: " + username + " connected", sender_way);
+
     while(true){
-        memset(buffer, 1024);
+        memset(buffer, 0, 1024);
         int byte_received = recv(sender_way, buffer, 1024, 0);
         if(byte_received <= 0){
+            removeClient(sender_way);
             cout << "Disconnected...\n";
             return;
         }
-        roster_lock.lock();
-        for(int client_way:clients){
-            if(sender_way != client_way){
-                send(client_way, buffer, byte_received, 0);
-            }
-        }
-        roster_lock.unlock();
-        cout << "\nBroadCasted the message to room\n";
+        string message(buffer, byte_received);
+        string formatted_message = "[" + username + "]: " + message;
+        broadcastMessage(formatted_message, sender_way);
+        cout << formatted_message << "\n";
+        cout << "BroadCasted the message to room\n";
     }
 }
 
@@ -45,10 +80,7 @@ int main(){
 
     while(true){
         int caller_way = accept(my_way, nullptr, nullptr);
-        cout << "\nNew user joined the room!\n Total Users: " << clients.size() << "\n";
-        roster_lock.lock();
-        clients.push_back(caller_way);
-        roster_lock.unlock();
+        cout << "New connection accepted\n";
 
         thread client_thread(receiveMessage, caller_way);
         client_thread.detach();
